@@ -1,151 +1,138 @@
-import requests
-import re
 from dotenv import load_dotenv
 load_dotenv()
 
-from infrastructure.groq_adapter import GroqLLMProvider
+import requests
+
 from infrastructure.chroma_adapter import ChromaVectorStore
+from infrastructure.groq_adapter import GroqLLMProvider
 
+
+# ----------------------------------------------
 # GLOBAL STATE
-vector_store = None
+# ----------------------------------------------
 chat_history = []
-current_document_url = None
+vector_store = None
+llm = GroqLLMProvider()
 
 
-# ---------------- CHUNKER (Improved) ----------------
-def chunk_text(text, chunk_size=800, overlap=150):
-    parts = re.split(r'\n\s*\n', text)
-    chunks = []
-    current = ""
-
-    for part in parts:
-        part = part.strip()
-        if not part:
-            continue
-
-        if len(part) > chunk_size:
-            sentences = re.split(r'(?<=[.!?]) +', part)
-            for sent in sentences:
-                if len(current) + len(sent) < chunk_size:
-                    current += sent + " "
-                else:
-                    chunks.append(current.strip())
-                    current = sent + " "
-        else:
-            if len(current) + len(part) < chunk_size:
-                current += part + " "
-            else:
-                chunks.append(current.strip())
-                current = part + " "
-
-    if current:
-        chunks.append(current.strip())
-
-    return chunks
+# ----------------------------------------------
+# RESET FUNCTION — clears everything correctly
+# ----------------------------------------------
+def reset_chat_and_store():
+    global chat_history, vector_store
+    chat_history = []      # Clear chat
+    vector_store = None    # Reset vector store
+    print("🔄 Reset: Chat history and vector store cleared.")
 
 
-# ---------------- LOAD DOCUMENT (now error-safe) ----------------
+# ----------------------------------------------
+# LOAD DOCUMENT
+# ----------------------------------------------
 def load_document(url):
-    global vector_store, chat_history, current_document_url
-
-    # Reset if new URL comes
-    if url != current_document_url:
-        chat_history.clear()
-        vector_store = None
-        current_document_url = url
-
-    # Validate extension
-    if not url.endswith(".txt"):
-        return None, "❌ This system only works with .txt documentation files.\n\nPlease scroll to bottom of Svelte docs and copy the *llms.txt* link."
-
-    # Fetch
-    try:
-        response = requests.get(url, timeout=10)
-    except:
-        return None, "❌ Failed to reach the URL. Please check your internet or link."
-
-    if response.status_code != 200:
-        return None, f"❌ Document returned HTTP {response.status_code}. Please check the link."
-
-    text = response.text.strip()
-
-    if len(text) < 10:
-        return None, "❌ The document is empty or invalid."
-
-    # Chunk + embed
-    chunks = chunk_text(text)
-    vector_store = ChromaVectorStore()
-    vector_store.add_texts(chunks)
-
-    return text, "✅ Document loaded and processed successfully."
-def rag_answer(query):
-    print("🔥 USING NEW RAG FUNCTION")
-
     global vector_store
 
+    # Always reset before loading new document
+    reset_chat_and_store()
+
+    # Validate URL format
+    if not url.lower().endswith(".txt"):
+        return "❌ Invalid file type. Only .txt documentation files are allowed."
+
+    try:
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            return f"❌ Failed to load document (HTTP {resp.status_code})."
+    except Exception as e:
+        return f"❌ Error fetching document: {e}"
+
+    text = resp.text.strip()
+
+    if len(text) < 20:
+        return "❌ Document is empty or too short."
+
+    # Build vector store
+    vector_store = ChromaVectorStore()
+    vector_store.add_documents([text])
+    vector_store.raw_text = text
+
+    return "✅ Document loaded successfully!"
+
+
+# ----------------------------------------------
+# RAG ANSWER FUNCTION
+# ----------------------------------------------
+# ----------------------------------------------
+# RAG ANSWER
+# ----------------------------------------------
+def rag_answer(query):
+    global vector_store, chat_history
+
     if vector_store is None:
-        return "❌ Please load a document first."
+        return "❌ Load a document first."
 
-    retrieved = []
+    # Retrieve semantic chunks
+    retrieved = vector_store.search(query, k=3)
 
-    # 1) Semantic search
-    results = vector_store.search(query, k=5)
-    if results:
-        retrieved = results
+    # Strict out-of-scope condition
+    if not retrieved or len(" ".join(retrieved).strip()) == 0:
+        topics = extract_topics(vector_store.raw_text)
+        return build_out_of_scope_message(topics)
 
-    # 2) Keyword fallback
-    if not retrieved:
-        keywords = [w.lower() for w in query.split() if len(w) > 3]
-        keyword_hits = []
-        for chunk in vector_store.raw_chunks:
-            if any(k in chunk.lower() for k in keywords):
-                keyword_hits.append(chunk)
-        if keyword_hits:
-            retrieved = keyword_hits[:5]
-
-    # 3) Special handle() handling for hooks docs
-    if "handle" in query.lower():
-        handle_hits = [c for c in vector_store.raw_chunks if "handle" in c.lower()]
-        if handle_hits:
-            retrieved = handle_hits[:5]
-
-    # 4) OUT OF SCOPE RESPONSE
-    if not retrieved:
-        # Extract topics
-        topics = []
-        for chunk in vector_store.raw_chunks[:5]:
-            for word in chunk.split():
-                if word.isalpha() and len(word) > 4:
-                    topics.append(word.lower())
-        topics = list(dict.fromkeys(topics))[:3]
-
-        topic_list = (
-            f"• {topics[0]}\n• {topics[1]}\n• {topics[2]}"
-            if len(topics) >= 3
-            else "No clear topics detected"
-        )
-
-        return (
-            "⚠️ **Your question is outside the scope of this document.**\n\n"
-            "👉 Please ask questions ONLY from topics present in this .txt file.\n\n"
-            "This document mainly covers:\n"
-            f"{topic_list}\n\n"
-            "Example questions you can ask:\n"
-            f"• What is {topics[0]}?\n"
-            f"• Explain {topics[1]}\n"
-            f"• Purpose of {topics[2]}\n\n"
-            "📌 *Note: This assistant answers strictly from the uploaded document.*"
-        )
-
-    # 5) Build RAG prompt
+    # Build context
     context = "\n\n---\n\n".join(retrieved)
-    prompt = (
-        "Answer ONLY using this documentation. Do NOT guess.\n\n"
-        f"{context}\n\n"
-        f"Question: {query}"
+
+    prompt = f"""
+You are a STRICT documentation assistant.
+
+RULES:
+- You may ONLY answer using the documentation provided in the CONTEXT below.
+- If the answer is NOT explicitly written in the documentation, respond:
+  "⚠️ This question is outside the scope of the provided document."
+- DO NOT infer, DO NOT guess, DO NOT use external knowledge.
+- DO NOT explain concepts unless the document explains them.
+- DO NOT output any example or code unless the document contains it.
+
+DOCUMENTATION CONTEXT:
+----------------------
+{context}
+
+USER QUESTION:
+{query}
+
+YOUR RESPONSE:
+- If the answer exists → summarize it in simple words.
+- If it does NOT exist → output only the out-of-scope message.
+"""
+
+    answer = llm.generate(prompt)
+    chat_history.append(("user", query))
+    chat_history.append(("assistant", answer))
+
+    return answer
+
+
+
+# ----------------------------------------------
+# Extract topic hints for out-of-scope replies
+# ----------------------------------------------
+def extract_topics(text):
+    words = [w for w in text.replace("\n", " ").split() if w.isalpha() and len(w) > 4]
+    unique = list(dict.fromkeys(words))
+    return unique[:3] if len(unique) >= 3 else ["content", "document", "topics"]
+
+
+# ----------------------------------------------
+# Out-of-scope fallback message
+# ----------------------------------------------
+def build_out_of_scope_message(topics):
+    return (
+        "⚠️ **Your question is outside the scope of this document.**\n\n"
+        "👉 Please ask questions ONLY about topics covered inside the loaded .txt file.\n\n"
+        "**Detected topics in this document:**\n"
+        f"• {topics[0]}\n• {topics[1]}\n• {topics[2]}\n\n"
+        "**Example valid questions:**\n"
+        f"• What is {topics[0]}?\n"
+        f"• Explain {topics[1]}\n"
+        f"• Purpose of {topics[2]}\n\n"
+        "📌 *Note: This assistant answers strictly from the uploaded document.*"
     )
-
-    return llm.generate(prompt)
-
-# LLM
-llm = GroqLLMProvider()
