@@ -1,13 +1,14 @@
-streamlit
 
-sentence-transformers
-requests
-python-dotenv
-groq
-langchain
-langgraph
-
-langchain-text-splitters
 
 chromadb>=0.5.0
+streamlit
+requests
+python-dotenv
+
+sentence-transformers
+langchain
+langchain-google-genai
+tqdm
+
+
 
