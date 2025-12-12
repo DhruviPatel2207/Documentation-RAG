@@ -22,8 +22,6 @@ if "last_load_msg" not in st.session_state:
 # ------------------------------------------------------------
 st.markdown("""
 <style>
-/* Chat bubbles automatically follow dark/light theme using Streamlit CSS vars */
-
 .user-bubble {
     background: var(--secondary-background-color);
     color: var(--text-color);
@@ -68,18 +66,29 @@ def submit_question():
 # ------------------------------------------------------------
 # SIDEBAR — LOAD DOCUMENT
 # ------------------------------------------------------------
+# ------------------------------------------------------------
+# SIDEBAR — LOAD DOCUMENT (.txt)
+# ------------------------------------------------------------
 st.sidebar.header("📄 Load Documentation (.txt)")
-url = st.sidebar.text_input("Document URL:", value="https://svelte.dev/docs/kit/hooks/llms.txt")
+
+url = st.sidebar.text_input(
+    "Document URL:",
+    placeholder="Paste a .txt documentation link",
+    value="",  # no default URL
+)
 
 if st.sidebar.button("Load Document"):
-    msg = main.load_document(url.strip())
-    st.session_state.last_load_msg = msg
-
-    if msg.startswith("✅"):
-        st.session_state.chat = []
-        st.sidebar.success(msg)
+    if not url.strip():
+        st.sidebar.error("⚠️ Please enter a valid .txt URL before loading.")
     else:
-        st.sidebar.error(msg)
+        msg = main.load_document(url.strip())
+        st.session_state.last_load_msg = msg
+
+        if msg.startswith("✅"):
+            st.session_state.chat = []  # reset chat on new document
+            st.sidebar.success(msg)
+        else:
+            st.sidebar.error(msg)
 
 # ------------------------------------------------------------
 # MAIN TITLE
@@ -129,20 +138,31 @@ st.write("---")
 
 
 # ------------------------------------------------------------
-# INPUT FIELD (auto-clears)
+# DISABLE CHAT UNTIL DOCUMENT IS LOADED
 # ------------------------------------------------------------
-st.text_input(
-    "Ask a question:",
-    key="user_query",
-    placeholder="Type your question…",
-    on_change=submit_question,
-)
+doc_loaded = st.session_state.last_load_msg.startswith("✅")
+
+if not doc_loaded:
+    st.text_input(
+        "Ask a question:",
+        key="user_query",
+        placeholder="⚠️ Load a documentation file first...",
+        disabled=True
+    )
+    st.warning("Please load a valid `.txt` documentation file using the sidebar.")
+else:
+    st.text_input(
+        "Ask a question:",
+        key="user_query",
+        placeholder="Type your question…",
+        on_change=submit_question
+    )
 
 
 # ------------------------------------------------------------
 # HANDLE SUBMITTED QUESTION
 # ------------------------------------------------------------
-if st.session_state.get("submitted_query"):
+if doc_loaded and st.session_state.get("submitted_query"):
     query = st.session_state.submitted_query
     del st.session_state["submitted_query"]
 
