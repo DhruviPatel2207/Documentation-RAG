@@ -1,10 +1,9 @@
 # main.py
-import os
+
 from dotenv import load_dotenv
 load_dotenv()
 
-from core.entities import ChatMessage
-from infrastructure.web_loader import load_text_from_url, is_valid_txt_url
+
 from infrastructure.chroma_adapter import ChromaVectorStore
 from infrastructure.openrouter_adapter import OpenRouterLLM
 
